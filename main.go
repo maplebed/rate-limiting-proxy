@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -22,13 +23,18 @@ type app struct {
 }
 
 func main() {
+
+	wk := os.Getenv("HONEYCOMB_WRITEKEY")
+	var useStdout bool
+	if wk == "" {
+		useStdout = true
+	}
 	// Initialize beeline. The only required field is WriteKey.
 	beeline.Init(beeline.Config{
-		WriteKey: "abcabc123123",
+		WriteKey: wk,
 		Dataset:  "rate-limiting-proxy",
-		// for demonstration, send the event to STDOUT instead of Honeycomb.
-		// Remove the STDOUT setting when filling in a real write key.
-		STDOUT: true,
+		// In no writekey is configured, send the event to STDOUT instead of Honeycomb.
+		STDOUT: useStdout,
 	})
 
 	a := &app{
