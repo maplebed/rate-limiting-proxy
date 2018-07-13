@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -68,7 +70,9 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 	// ok we're allowed to proceed, let's copy the request over to a new one and
 	// dispatch it downstream
 	defer req.Body.Close()
-	downstreamReq, err := http.NewRequest(req.Method, downstreamTarget+req.URL.String(), req.Body)
+	reqBod, _ := ioutil.ReadAll(req.Body)
+	buf := bytes.NewBuffer(reqBod)
+	downstreamReq, err := http.NewRequest(req.Method, downstreamTarget+req.URL.String(), buf)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		io.WriteString(w, `{"error":"failed to create downstream request"}`)
