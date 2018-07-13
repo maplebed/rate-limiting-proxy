@@ -1,34 +1,27 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	beeline "github.com/honeycombio/beeline-go"
 	"github.com/honeycombio/beeline-go/wrappers/hnynethttp"
-	"github.com/honeycombio/hound/leakybucket"
+	"github.com/honeycombio/leakybucket"
 )
-
-var rateOpts = leakybucket.Options{
-	Capacity:      20,
-	DrainAmount:   2,
-	DrainPeriod:   1 * time.Second,
-	CheckInterval: 1 * time.Second,
-}
 
 const downstreamTarget = "http://localhost:3000"
 
 type app struct {
 	client      *http.Client
-	rateLimiter leakybucket.RateLimiter
+	rateLimiter map[string]*leakybucket.Bucket
+	sync.Mutex
 }
 
 func main() {
-
 	// Initialize beeline. The only required field is WriteKey.
 	beeline.Init(beeline.Config{
 		WriteKey: "abcabc123123",
@@ -39,19 +32,15 @@ func main() {
 	})
 
 	a := &app{
-		client: http.DefaultClient,
-		// TODO replace with an in-memory rate limiter
-		rateLimiter: &RandomRateLimiter{2},
+		client:      http.DefaultClient,
+		rateLimiter: make(map[string]*leakybucket.Bucket),
 	}
 
 	http.HandleFunc("/", hnynethttp.WrapHandlerFunc(a.proxy))
 	log.Fatal(http.ListenAndServe(":8080", nil))
-
-	fmt.Printf("hello world\n")
 }
 
 func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
-	// check rate limits
 	var rateKey string
 	forwarded := req.Header.Get("X-Forwarded-For")
 	beeline.AddField(req.Context(), "forwarded_for_incoming", forwarded)
@@ -60,8 +49,10 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 	} else {
 		rateKey = forwarded
 	}
+
+	// check rate limits
 	beeline.AddField(req.Context(), "rate_limit_key", rateKey)
-	hitCapacity := a.rateLimiter.Add(rateKey, rateOpts)
+	hitCapacity := a.shouldRateLimit(req.Method, rateKey)
 	if hitCapacity != nil {
 		w.WriteHeader(http.StatusTooManyRequests)
 		io.WriteString(w, `{"error":"rate limit exceeded; please wait 1sec and try again"}`)
@@ -108,4 +99,29 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	// copy over body
 	io.Copy(w, resp.Body)
+}
+
+func (a *app) shouldRateLimit(method, key string) error {
+	a.Lock()
+	defer a.Unlock()
+
+	var b *leakybucket.Bucket
+	b, ok := a.rateLimiter[method+key]
+	if !ok {
+		if method == "GET" {
+			b = &leakybucket.Bucket{
+				Capacity:    50,
+				DrainAmount: 8,
+				DrainPeriod: 1 * time.Second,
+			}
+		} else {
+			b = &leakybucket.Bucket{
+				Capacity:    10,
+				DrainAmount: 1,
+				DrainPeriod: 1 * time.Second,
+			}
+		}
+		a.rateLimiter[method+key] = b
+	}
+	return b.Add()
 }
