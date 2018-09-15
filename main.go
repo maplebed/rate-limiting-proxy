@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -46,10 +47,8 @@ type app struct {
 }
 
 func main() {
-
-	client := http.DefaultClient
 	a := &app{
-		client:      client,
+		client:      http.DefaultClient,
 		rateLimiter: make(map[string]*leakybucket.Bucket),
 	}
 
@@ -66,6 +65,8 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 		rateKey = forwarded
 	}
 
+	partialLog := fmt.Sprintf("%s %s %s", time.Now().Format(time.RFC3339), req.RemoteAddr, req.URL.String())
+
 	// check rate limits
 	hitCapacity := a.shouldRateLimit(req.Method, rateKey)
 	if hitCapacity != nil {
@@ -77,6 +78,7 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 		// ok, go ahead and reply
 		w.WriteHeader(http.StatusTooManyRequests)
 		io.WriteString(w, `{"error":"rate limit exceeded; please wait 1sec and try again"}`)
+		fmt.Printf("%s %d %f\n", partialLog, http.StatusTooManyRequests, sleepTime)
 		return
 	}
 	// ok we're allowed to proceed, let's copy the request over to a new one and
@@ -88,6 +90,7 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		io.WriteString(w, `{"error":"failed to create downstream request"}`)
+		fmt.Printf("%s %d %f\n", partialLog, http.StatusServiceUnavailable, 0)
 		return
 	}
 	// add context to propagate the beeline trace
@@ -101,11 +104,13 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 	} else {
 		downstreamReq.Header.Set("X-Forwarded-For", req.RemoteAddr)
 	}
+	startDownstream := time.Now()
 	// call the downstream service
 	resp, err := a.client.Do(downstreamReq)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		io.WriteString(w, `{"error":"downstream target unavailable"}`)
+		fmt.Printf("%s %d %f\n", partialLog, http.StatusServiceUnavailable, float64(time.Since(startDownstream))/float64(time.Millisecond))
 		return
 	}
 	// ok, we got a response, let's pass it along
@@ -118,6 +123,7 @@ func (a *app) proxy(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	// copy over body
 	io.Copy(w, resp.Body)
+	fmt.Printf("%s %d %f\n", partialLog, resp.StatusCode, float64(time.Since(startDownstream))/float64(time.Millisecond))
 }
 
 func (a *app) shouldRateLimit(method, key string) error {
