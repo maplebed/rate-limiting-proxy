@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -64,8 +65,17 @@ func main() {
 		STDOUT: useStdout,
 	})
 
-	client := http.DefaultClient
-	client.Transport = hnynethttp.WrapRoundTripper(http.DefaultTransport)
+	// create a custom client that has sane timeouts and records outbound events
+	client := &http.Client{
+		Timeout: time.Second * 10,
+		Transport: hnynethttp.WrapRoundTripper(&http.Transport{
+			Dial: (&net.Dialer{
+				Timeout: 5 * time.Second,
+			}).Dial,
+			TLSHandshakeTimeout: 6 * time.Second,
+		}),
+	}
+
 	a := &app{
 		client:      client,
 		rateLimiter: make(map[string]*leakybucket.Bucket),
