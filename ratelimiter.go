@@ -3,7 +3,7 @@ package main
 import (
 	"math/rand"
 
-	"github.com/honeycombio/hound/leakybucket"
+	"github.com/honeycombio/leakybucket"
 )
 
 type RandomRateLimiter struct {
